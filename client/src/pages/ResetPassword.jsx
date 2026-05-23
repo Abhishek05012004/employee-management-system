@@ -76,9 +76,7 @@ export default function ResetPassword() {
         <div className="max-w-md w-full">
           <div className="bg-white/90 rounded-2xl shadow-xl p-8 border border-gray-100">
             <div className="text-center">
-              <div className="mx-auto h-16 w-16 bg-red-100 rounded-full flex items-center justify-center mb-6">
-                <AlertTriangle className="h-8 w-8 text-red-600" />
-              </div>
+              <img src="/logo.png" alt="Logo" className="mx-auto h-24 w-24 object-contain mb-6" />
               <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center justify-center gap-2">
                 <AlertTriangle className="h-6 w-6 text-red-600" />
                 Invalid Reset Link
@@ -142,9 +140,7 @@ export default function ResetPassword() {
       <div className="max-w-md w-full">
         <div className="bg-white/90 rounded-2xl shadow-xl p-8 border border-gray-100">
           <div className="text-center mb-8">
-            <div className="mx-auto h-16 w-16 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full flex items-center justify-center mb-6">
-              <Lock className="h-8 w-8 text-white" />
-            </div>
+            <img src="/logo.png" alt="Logo" className="mx-auto h-24 w-24 object-contain mb-6" />
             <h2 className="text-2xl font-bold text-gray-900 flex items-center justify-center gap-2">
               <Lock className="h-6 w-6 text-blue-600" />
               Reset Your Password

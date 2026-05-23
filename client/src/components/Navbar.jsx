@@ -153,7 +153,7 @@ export default function Navbar({ onOpenSidebar }) {
   }, [user])
 
   return (
-    <nav className="bg-white shadow-sm border-b border-gray-200 px-4 sm:px-6 py-3 sm:py-4">
+    <nav className="bg-white shadow-sm border-b border-gray-200 px-4 sm:px-6 py-1.5 sm:py-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           {/* Hamburger Menu */}
@@ -165,7 +165,7 @@ export default function Navbar({ onOpenSidebar }) {
           >
             <Menu className="w-5 h-5 text-gray-700" />
           </button>
-          <img src="/logo.png" alt="Logo" className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 object-contain" />
+          <img src="/logo.png" alt="Logo" className="w-14 h-14 sm:w-16 sm:h-16 md:w-20 md:h-20 object-contain" />
           <h1 className="hidden md:block text-base sm:text-lg md:text-xl font-semibold text-gray-800">Employee Management System</h1>
         </div>
 

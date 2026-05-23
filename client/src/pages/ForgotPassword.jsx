@@ -48,9 +48,7 @@ export default function ForgotPassword() {
         <div className="max-w-md w-full">
           <div className="bg-white/90 rounded-2xl shadow-xl p-8 border border-gray-100">
             <div className="text-center">
-              <div className="mx-auto h-16 w-16 bg-green-100 rounded-full flex items-center justify-center mb-6">
-                <CheckCircle className="h-8 w-8 text-green-600" />
-              </div>
+            <img src="/logo.png" alt="Logo" className="mx-auto h-24 w-24 object-contain mb-6" />
               <h2 className="text-2xl font-bold text-gray-900 mb-4 flex items-center justify-center gap-2">
                 <CheckCircle className="h-6 w-6 text-green-600" />
                 Check Your Email
@@ -130,9 +128,7 @@ export default function ForgotPassword() {
       <div className="max-w-md w-full">
         <div className="bg-white/90 rounded-2xl shadow-xl p-8 border border-gray-100">
           <div className="text-center mb-8">
-            <div className="mx-auto h-16 w-16 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-full flex items-center justify-center mb-6">
-              <Mail className="h-8 w-8 text-white" />
-            </div>
+            <img src="/logo.png" alt="Logo" className="mx-auto h-24 w-24 object-contain mb-6" />
             <h2 className="text-2xl font-bold text-gray-900 flex items-center justify-center gap-2">
               <Mail className="h-6 w-6 text-blue-600" />
               Forgot Password?
