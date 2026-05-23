@@ -1,0 +1,168 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #ffffff;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #f9fafb;
+  color: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+#root {
+  min-height: 100vh;
+  width: 100%;
+}
+
+/* Fix input text visibility */
+input,
+textarea,
+select {
+  color: #111827 !important;
+  background-color: #ffffff !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #6b7280 !important;
+  opacity: 1 !important;
+}
+
+/* Ensure all text is visible */
+.text-gray-900 {
+  color: #111827 !important;
+}
+
+.text-gray-700 {
+  color: #374151 !important;
+}
+
+.text-gray-600 {
+  color: #4b5563 !important;
+}
+
+.text-gray-500 {
+  color: #6b7280 !important;
+}
+
+/* Fix search input specifically */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="tel"],
+input[type="date"],
+textarea,
+select {
+  color: #111827 !important;
+  background-color: #ffffff !important;
+}
+
+/* Fix focus states */
+input:focus,
+textarea:focus,
+select:focus {
+  color: #111827 !important;
+  background-color: #ffffff !important;
+}
+
+/* Add safe-area padding for Toasts on mobile and reduce heading sizes on small screens */
+.app-toast-container {
+  /* Let the container shrink within viewport instead of full-bleed */
+  width: auto !important;
+  padding: 0 !important;
+}
+
+.app-toast {
+  /* Add horizontal gutter so it doesn't hug edges */
+  margin: 8px 12px !important;
+  border-radius: 10px !important;
+}
+
+/* Extra safety for all toastify containers (in case className isn't applied somewhere) */
+@media (max-width: 640px) {
+  .Toastify__toast-container {
+    padding: env(safe-area-inset-top) 12px env(safe-area-inset-bottom) 12px !important; left: auto !important; right: 0 !important; top: 0 !important;
+    width: auto !important;
+  }
+  .Toastify__toast {
+    margin-bottom: 10px !important;
+    border-radius: 10px !important;
+  }
+
+  /* Slightly smaller heading sizes and tighter card padding on mobile */
+  h1,
+  .text-4xl {
+    font-size: 1.375rem !important; /* ~22px */
+    line-height: 1.3 !important;
+  }
+  h2,
+  .text-3xl {
+    font-size: 1.25rem !important; /* ~20px */
+    line-height: 1.35 !important;
+  }
+  h3,
+  .text-2xl {
+    font-size: 1.125rem !important; /* ~18px */
+    line-height: 1.4 !important;
+  }
+
+  /* Give main content a consistent side gutter on very small screens */
+  main {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+  }
+
+  /* Cards and sections: ensure inner padding doesn't feel cramped */
+  .card,
+  .panel,
+  .box {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  /* Tables: allow horizontal scroll on tiny screens to avoid overflow */
+  table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Thin Scrollbars Globally */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}

@@ -1,0 +1,803 @@
+const express = require("express")
+const Attendance = require("../models/Attendance")
+const User = require("../models/User")
+const Leave = require("../models/Leave")
+const jwt = require("jsonwebtoken")
+const router = express.Router()
+
+const auth = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1]
+    if (!token) return res.status(403).json({ error: "No token provided" })
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    req.user = await User.findById(decoded.id)
+    if (!req.user || !req.user.isActive) return res.status(403).json({ error: "Invalid token or inactive user" })
+
+    next()
+  } catch (error) {
+    res.status(403).json({ error: "Invalid token" })
+  }
+}
+
+const adminAuth = (req, res, next) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Admin access required" })
+  }
+  next()
+}
+
+const managerAuth = (req, res, next) => {
+  if (req.user.role !== "admin" && req.user.role !== "manager" && req.user.role !== "hr") {
+    return res.status(403).json({ error: "Admin, Manager, or HR access required" })
+  }
+  next()
+}
+
+// Helper to get client's local time components
+const getClientLocalComponents = (tzOffsetMinutes) => {
+  if (typeof tzOffsetMinutes === "number" && !Number.isNaN(tzOffsetMinutes)) {
+    const nowUtc = new Date()
+    const clientTime = new Date(nowUtc.getTime() - tzOffsetMinutes * 60 * 1000)
+    return {
+      year: clientTime.getUTCFullYear(),
+      month: clientTime.getUTCMonth(),
+      date: clientTime.getUTCDate(),
+      hours: clientTime.getUTCHours(),
+      minutes: clientTime.getUTCMinutes(),
+      seconds: clientTime.getUTCSeconds()
+    }
+  } else {
+    const now = new Date()
+    return {
+      year: now.getFullYear(),
+      month: now.getMonth(),
+      date: now.getDate(),
+      hours: now.getHours(),
+      minutes: now.getMinutes(),
+      seconds: now.getSeconds()
+    }
+  }
+}
+
+const getCurrentDate = (tzOffsetMinutes) => {
+  const { year, month, date } = getClientLocalComponents(tzOffsetMinutes)
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(date).padStart(2, "0")}`
+}
+
+const getCurrentTime = (tzOffsetMinutes) => {
+  const { hours, minutes, seconds } = getClientLocalComponents(tzOffsetMinutes)
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+}
+
+const getClientTzOffset = (req) => {
+  const hdr = req.headers["x-tz-offset-minutes"]
+  if (hdr === undefined) return null
+  const n = Number(hdr)
+  return Number.isFinite(n) ? n : null
+}
+
+const getCurrentDateFromBase = (baseDate) => {
+  const year = baseDate.getFullYear()
+  const month = String(baseDate.getMonth() + 1).padStart(2, "0")
+  const day = String(baseDate.getDate()).padStart(2, "0")
+  return `${year}-${month}-${day}`
+}
+
+const getCurrentTimeFromBase = (baseDate) => {
+  const hours = String(baseDate.getHours()).padStart(2, "0")
+  const minutes = String(baseDate.getMinutes()).padStart(2, "0")
+  const seconds = String(baseDate.getSeconds()).padStart(2, "0")
+  return `${hours}:${minutes}:${seconds}`
+}
+
+const isValidHms = (s) => typeof s === "string" && /^\d{2}:\d{2}:\d{2}$/.test(s)
+const isValidYmd = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s)
+
+// Add face verification helper
+const euclidean = (a = [], b = []) => {
+  if (!a?.length || !b?.length || a.length !== b.length) return Number.POSITIVE_INFINITY
+  let s = 0
+  for (let i = 0; i < a.length; i++) {
+    const d = a[i] - b[i]
+    s += d * d
+  }
+  return Math.sqrt(s)
+}
+
+const verifyFaceMatch = (embedding, enrolled, threshold = 0.6) => {
+  if (!Array.isArray(embedding) || !embedding.length) return false
+  if (!Array.isArray(enrolled) || !enrolled.length) return false
+  return euclidean(embedding, enrolled) <= threshold
+}
+
+async function findFaceOwner(embedding, excludeUserId) {
+  const others = await User.find({ faceEnrolled: true }).select("_id faceEmbedding name email")
+  let best = { userId: null, distance: Number.POSITIVE_INFINITY }
+  for (const u of others) {
+    if (excludeUserId && String(u._id) === String(excludeUserId)) continue
+    const d = euclidean(embedding, u.faceEmbedding || [])
+    if (d < best.distance) best = { userId: u._id, distance: d }
+  }
+  return best
+}
+
+const _euclid = (a = [], b = []) => {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return Number.POSITIVE_INFINITY
+  let s = 0
+  for (let i = 0; i < a.length; i++) {
+    const d = a[i] - b[i]
+    s += d * d
+  }
+  return Math.sqrt(s)
+}
+const _matches = (probe = [], enrolled = [], t = 0.6) => _euclid(probe, enrolled) <= t
+
+const OFFICE_LAT = Number(process.env.OFFICE_LAT || 22.3137575)
+const OFFICE_LNG = Number(process.env.OFFICE_LNG || 73.1812517)
+const OFFICE_RADIUS_METERS = Number(process.env.OFFICE_RADIUS_METERS || 50)
+
+// Haversine distance in meters
+function haversineMeters(lat1, lon1, lat2, lon2) {
+  const toRad = (d) => (d * Math.PI) / 180
+  const R = 6371000 // meters
+  const dLat = toRad(lat2 - lat1)
+  const dLon = toRad(lon2 - lon1)
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2)
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+  return R * c
+}
+
+router.post("/checkin", auth, async (req, res) => {
+  try {
+    const faceEmbedding = req.body?.faceEmbedding
+    if (!req.user.faceEnrolled || !Array.isArray(req.user.faceEmbedding) || !req.user.faceEmbedding.length) {
+      return res.status(412).json({ message: "Face enrollment required before check-in." })
+    }
+    if (!Array.isArray(faceEmbedding) || faceEmbedding.length < 64) {
+      return res.status(400).json({ message: "Face data is required for check-in." })
+    }
+    if (!_matches(faceEmbedding, req.user.faceEmbedding, 0.55)) {
+      return res.status(401).json({ message: "Face did not match your enrolled face." })
+    }
+
+    const location = req.body.location || { lat: 0, lng: 0 } // Default if not provided
+    /* 
+    if (!location || typeof location.lat !== "number" || typeof location.lng !== "number") {
+      return res.status(400).json({ message: "Location permission is required to check in." })
+    }
+    const distance = haversineMeters(location.lat, location.lng, OFFICE_LAT, OFFICE_LNG)
+    if (distance > OFFICE_RADIUS_METERS) {
+      return res.status(403).json({
+        message: `Out of office range. Move closer to the office to check in.`,
+        distanceMeters: Math.round(distance),
+        allowedRadiusMeters: OFFICE_RADIUS_METERS,
+      })
+    }
+    */
+
+    const tzOffsetMinutes = getClientTzOffset(req)
+    const today = isValidYmd(req.body.clientLocalDate) ? req.body.clientLocalDate : getCurrentDate(tzOffsetMinutes)
+    const checkInTime = isValidHms(req.body.clientLocalTime)
+      ? req.body.clientLocalTime
+      : getCurrentTime(tzOffsetMinutes)
+
+    console.log("[v0] Check-in computed:", {
+      source:
+        isValidYmd(req.body.clientLocalDate) && isValidHms(req.body.clientLocalTime)
+          ? "client-local"
+          : "server-adjusted",
+      today,
+      checkInTime,
+      clientTimeZone: req.body.clientTimeZone,
+      tzOffsetMinutes,
+    })
+
+    let attendance = await Attendance.findOne({ user: req.user._id, date: today })
+    if (attendance?.checkIn) {
+      return res.status(400).json({ message: "You have already checked in today", attendance })
+    }
+
+    if (!attendance) {
+      attendance = new Attendance({ adminCode: req.user.adminCode, user: req.user._id, date: today })
+    }
+
+    attendance.checkIn = checkInTime
+    attendance.face = attendance.face || {}
+    attendance.face.checkIn = faceEmbedding.map(Number)
+    attendance.face.version = "face-api-0.22.2"
+    attendance.checkInFaceEmbedding = faceEmbedding.map(Number)
+    attendance.location = attendance.location || {}
+    attendance.location.checkIn = JSON.stringify(location)
+    await attendance.save()
+    await attendance.populate("user", "name employeeId")
+
+    return res.status(200).json({ message: "Checked in successfully.", attendance })
+  } catch (error) {
+    console.error("Check-in error:", error)
+    return res.status(500).json({ error: "Failed to check in. Please try again." })
+  }
+})
+
+// ── DEV ONLY ── Skip face verification for testing. Remove before production. ──
+router.post("/checkin-dev", auth, async (req, res) => {
+  try {
+    console.log("[DEV] Bypass check-in for user:", req.user.email)
+    const tzOffsetMinutes = getClientTzOffset(req)
+    const today = isValidYmd(req.body.clientLocalDate) ? req.body.clientLocalDate : getCurrentDate(tzOffsetMinutes)
+    const checkInTime = isValidHms(req.body.clientLocalTime)
+      ? req.body.clientLocalTime
+      : getCurrentTime(tzOffsetMinutes)
+
+    let attendance = await Attendance.findOne({ user: req.user._id, date: today })
+    if (attendance?.checkIn) {
+      return res.status(400).json({ message: "You have already checked in today", attendance })
+    }
+    if (!attendance) {
+      attendance = new Attendance({ adminCode: req.user.adminCode, user: req.user._id, date: today })
+    }
+    attendance.checkIn = checkInTime
+    attendance.location = attendance.location || {}
+    attendance.location.checkIn = JSON.stringify(req.body.location || { lat: 0, lng: 0 })
+    await attendance.save()
+    await attendance.populate("user", "name employeeId")
+    return res.status(200).json({ message: "[DEV] Checked in successfully (no face verification).", attendance })
+  } catch (error) {
+    console.error("[DEV] Check-in bypass error:", error)
+    return res.status(500).json({ error: "Failed to check in." })
+  }
+})
+// ── END DEV ONLY ──
+
+router.post("/checkout", auth, async (req, res) => {
+  try {
+    const faceEmbedding = req.body?.faceEmbedding
+    if (!req.user.faceEnrolled || !Array.isArray(req.user.faceEmbedding) || !req.user.faceEmbedding.length) {
+      return res.status(412).json({ message: "Face enrollment required before check-out." })
+    }
+    if (!Array.isArray(faceEmbedding) || faceEmbedding.length < 64) {
+      return res.status(400).json({ message: "Face data is required for check-out." })
+    }
+    if (!_matches(faceEmbedding, req.user.faceEmbedding, 0.55)) {
+      return res.status(401).json({ message: "Face did not match your enrolled face." })
+    }
+
+    const location = req.body.location || { lat: 0, lng: 0 } // Default if not provided
+    /*
+    if (!location || typeof location.lat !== "number" || typeof location.lng !== "number") {
+      return res.status(400).json({ message: "Location permission is required to check out." })
+    }
+    const distance = haversineMeters(location.lat, location.lng, OFFICE_LAT, OFFICE_LNG)
+    if (distance > OFFICE_RADIUS_METERS) {
+      return res.status(403).json({
+        message: `Out of office range. Move closer to the office to check out.`,
+        distanceMeters: Math.round(distance),
+        allowedRadiusMeters: OFFICE_RADIUS_METERS,
+      })
+    }
+    */
+
+    const tzOffsetMinutes = getClientTzOffset(req)
+    const today = getCurrentDate(tzOffsetMinutes)
+    const record = await Attendance.findOne({ user: req.user._id, date: today })
+    if (!record?.checkIn) {
+      return res.status(404).json({ message: "No open check-in found to check out." })
+    }
+
+    if (Array.isArray(record.checkInFaceEmbedding) && record.checkInFaceEmbedding.length) {
+      if (!_matches(faceEmbedding, record.checkInFaceEmbedding, 0.5)) {
+        return res.status(401).json({ message: "Face does not match the one used during check-in." })
+      }
+    }
+
+    const checkOutTime = isValidHms(req.body.clientLocalTime)
+      ? req.body.clientLocalTime
+      : getCurrentTime(tzOffsetMinutes)
+
+    record.checkOut = checkOutTime
+
+    record.face = record.face || {}
+    record.face.checkOut = faceEmbedding.map(Number)
+    record.checkOutFaceEmbedding = faceEmbedding.map(Number)
+
+    record.location = record.location || {}
+    record.location.checkOut = JSON.stringify(location)
+
+    await record.save()
+    await record.populate("user", "name employeeId")
+
+    return res.status(200).json({ message: "Checked out successfully.", attendance: record })
+  } catch (error) {
+    console.error("Check-out error:", error)
+    return res.status(500).json({ error: "Failed to check out. Please try again." })
+  }
+})
+
+// ── DEV ONLY ── Skip face verification for testing. Remove before production. ──
+router.post("/checkout-dev", auth, async (req, res) => {
+  try {
+    console.log("[DEV] Bypass check-out for user:", req.user.email)
+    const tzOffsetMinutes = getClientTzOffset(req)
+    const today = getCurrentDate(tzOffsetMinutes)
+    const record = await Attendance.findOne({ user: req.user._id, date: today })
+    if (!record?.checkIn) {
+      return res.status(404).json({ message: "No open check-in found to check out." })
+    }
+    if (record.checkOut) {
+      return res.status(400).json({ message: "You have already checked out today." })
+    }
+    const checkOutTime = isValidHms(req.body.clientLocalTime)
+      ? req.body.clientLocalTime
+      : getCurrentTime(tzOffsetMinutes)
+    record.checkOut = checkOutTime
+    record.location = record.location || {}
+    record.location.checkOut = JSON.stringify(req.body.location || { lat: 0, lng: 0 })
+    await record.save()
+    await record.populate("user", "name employeeId")
+    return res.status(200).json({ message: "[DEV] Checked out successfully (no face verification).", attendance: record })
+  } catch (error) {
+    console.error("[DEV] Check-out bypass error:", error)
+    return res.status(500).json({ error: "Failed to check out." })
+  }
+})
+// ── END DEV ONLY ──
+
+router.get("/status", auth, async (req, res) => {
+  try {
+    const tzOffsetMinutes = getClientTzOffset(req)
+    const today = getCurrentDate(tzOffsetMinutes)
+    console.log("Getting status for date:", today, "tzOffset:", tzOffsetMinutes)
+
+    const attendance = await Attendance.findOne({ user: req.user._id, date: today }).lean()
+
+    res.json({
+      hasCheckedIn: !!attendance?.checkIn,
+      hasCheckedOut: !!attendance?.checkOut,
+      attendance,
+      currentDate: today,
+    })
+  } catch (error) {
+    console.error("Status error:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+router.get("/logs", auth, async (req, res) => {
+  try {
+    const tzOffsetMinutes = getClientTzOffset(req)
+    const { page = 1, limit = 10, userId, date } = req.query
+    const today = getCurrentDate(tzOffsetMinutes)
+    const targetDate = date || today
+
+    console.log("Fetching logs for date:", targetDate, "tzOffset:", tzOffsetMinutes)
+
+    const query = { adminCode: req.user.adminCode }
+
+    if (req.user.role === "employee") {
+      query.user = req.user._id
+    } else if (userId) {
+      query.user = userId
+    }
+
+    query.date = targetDate
+
+    let allUsers = []
+    if (req.user.role !== "employee") {
+      const userQuery = { isActive: true, adminCode: req.user.adminCode }
+      if (userId) {
+        userQuery._id = userId
+      }
+      allUsers = await User.find(userQuery).select("_id name employeeId department position").lean()
+    }
+
+    const attendanceRecords = await Attendance.find(query)
+      .populate("user", "name employeeId department position")
+      .sort({ createdAt: -1 })
+      .lean()
+
+    // Leave lookups use the provided date; no TZ change needed here.
+    const leaveQuery = {
+      adminCode: req.user.adminCode,
+      status: "approved",
+      startDate: { $lte: new Date(targetDate) },
+      endDate: { $gte: new Date(targetDate) },
+    }
+    const leaveRecords = await Leave.find(leaveQuery).populate("user", "name employeeId department position").lean()
+
+    // Create comprehensive logs
+    let logs = []
+
+    if (req.user.role === "employee") {
+      // For employees, just return their attendance records
+      logs = attendanceRecords
+    } else {
+      // For admin/manager, create comprehensive view
+      // Create a map of user attendance for the target date
+      const attendanceMap = new Map()
+      attendanceRecords.forEach((record) => {
+        attendanceMap.set(record.user._id.toString(), record)
+      })
+
+      // Create a map of users on leave for the target date
+      const leaveMap = new Map()
+      leaveRecords.forEach((leave) => {
+        leaveMap.set(leave.user._id.toString(), leave)
+      })
+
+      // Build comprehensive logs for all users
+      allUsers.forEach((user) => {
+        const userId = user._id.toString()
+        const attendance = attendanceMap.get(userId)
+        const leave = leaveMap.get(userId)
+
+        if (attendance) {
+          logs.push(attendance)
+        } else if (leave) {
+          // Create a virtual attendance record for leave
+          logs.push({
+            _id: `leave_${userId}_${targetDate}`,
+            user: user,
+            date: targetDate,
+            checkIn: null,
+            checkOut: null,
+            workingHours: 0,
+            status: "on_leave",
+            leaveType: leave.leaveType,
+            leaveReason: leave.reason,
+            isLeave: true,
+          })
+        } else {
+          // Create a virtual attendance record for absent
+          logs.push({
+            _id: `absent_${userId}_${targetDate}`,
+            user: user,
+            date: targetDate,
+            checkIn: null,
+            checkOut: null,
+            workingHours: 0,
+            status: "absent",
+            isAbsent: true,
+          })
+        }
+      })
+
+      // Sort logs by user name
+      logs.sort((a, b) => {
+        const nameA = a.user?.name || ""
+        const nameB = b.user?.name || ""
+        return nameA.localeCompare(nameB)
+      })
+    }
+
+    // Apply pagination
+    const startIndex = (page - 1) * limit
+    const endIndex = startIndex + Number.parseInt(limit)
+    const paginatedLogs = logs.slice(startIndex, endIndex)
+
+    const total = logs.length
+
+    res.json({
+      logs: paginatedLogs,
+      totalPages: Math.ceil(total / limit),
+      currentPage: Number.parseInt(page),
+      total,
+      currentDate: targetDate,
+    })
+  } catch (error) {
+    console.error("Attendance logs error:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// FIXED: Stats calculation with proper date range and working hours
+router.get("/stats", auth, async (req, res) => {
+  try {
+    const tzOffsetMinutes = getClientTzOffset(req)
+    const { month, year } = req.query
+    const comps = getClientLocalComponents(tzOffsetMinutes)
+    const targetMonth = Number(month) || comps.month + 1
+    const targetYear = Number(year) || comps.year
+
+    console.log(`Calculating stats for ${targetYear}-${targetMonth} tzOffset:`, tzOffsetMinutes)
+
+    const query = { user: req.user._id }
+    const startDate = `${targetYear}-${String(targetMonth).padStart(2, "0")}-01`
+    const lastDay = new Date(targetYear, targetMonth, 0).getDate()
+    const endDate = `${targetYear}-${String(targetMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`
+    query.date = { $gte: startDate, $lte: endDate }
+
+    const attendanceRecords = await Attendance.find(query).lean()
+
+    const stats = {
+      totalDays: attendanceRecords.length,
+      presentDays: attendanceRecords.filter((r) => r.checkIn).length,
+      totalHours: 0,
+      averageHours: 0,
+      lateCount: 0,
+    }
+
+    attendanceRecords.forEach((record) => {
+      if (record.workingHours && record.workingHours > 0) {
+        stats.totalHours += record.workingHours
+      }
+    })
+
+    stats.totalHours = Math.round(stats.totalHours * 100) / 100
+    if (stats.presentDays > 0) {
+      stats.averageHours = Math.round((stats.totalHours / stats.presentDays) * 100) / 100
+    }
+
+    res.json(stats)
+  } catch (error) {
+    console.error("Stats calculation error:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Generate attendance report
+router.get("/report", auth, managerAuth, async (req, res) => {
+  try {
+    const { startDate, endDate, userId } = req.query
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: "Start date and end date are required" })
+    }
+
+    const query = {
+      adminCode: req.user.adminCode,
+      date: { $gte: startDate, $lte: endDate },
+    }
+
+    // Admin/Manager/HR can get reports for all users or a specific user
+    if (req.user.role === "admin" || req.user.role === "manager" || req.user.role === "hr") {
+      if (userId) {
+        if (userId.includes(",")) {
+          query.user = { $in: userId.split(",") }
+        } else {
+          query.user = userId
+        }
+      }
+      // If userId is not provided, no user filter is applied, fetching for all
+    } else {
+      // Employee can only get reports for themselves
+      query.user = req.user._id
+    }
+
+    const report = await Attendance.find(query)
+      .populate("user", "name employeeId department position")
+      .sort({ date: -1, "user.name": 1 })
+      .lean()
+
+    res.json({
+      report,
+      dateRange: { startDate, endDate },
+      totalRecords: report.length,
+    })
+  } catch (error) {
+    console.error("Report generation error:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// ENHANCED: Download attendance report with better Excel presentation
+router.get("/download-report", auth, managerAuth, async (req, res) => {
+  try {
+    const { startDate, endDate, userId } = req.query
+
+    console.log("Download report request:", { startDate, endDate, userId })
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: "Start date and end date are required" })
+    }
+
+    const query = {
+      adminCode: req.user.adminCode,
+      date: { $gte: startDate, $lte: endDate },
+    }
+
+    // Admin/Manager/HR can get reports for all users or a specific user
+    if (req.user.role === "admin" || req.user.role === "manager" || req.user.role === "hr") {
+      if (userId) {
+        if (userId.includes(",")) {
+          query.user = { $in: userId.split(",") }
+        } else {
+          query.user = userId
+        }
+      }
+      // If userId is not provided, no user filter is applied, fetching for all
+    } else {
+      // Employee can only get reports for themselves
+      query.user = req.user._id
+    }
+
+    console.log("Query:", query)
+
+    const report = await Attendance.find(query)
+      .populate("user", "name employeeId department position")
+      .sort({ date: -1, "user.name": 1 })
+      .lean()
+
+    console.log(`Found ${report.length} records for report`)
+
+    if (report.length === 0) {
+      return res.status(404).json({ error: "No attendance records found for the specified date range" })
+    }
+
+    // Helper function to format time for display
+    const formatTime = (time) => {
+      if (!time) return ""
+      try {
+        const [hours, minutes] = time.split(":")
+        const hour12 =
+          Number.parseInt(hours) === 0
+            ? 12
+            : Number.parseInt(hours) > 12
+              ? Number.parseInt(hours) - 12
+              : Number.parseInt(hours)
+        const ampm = Number.parseInt(hours) >= 12 ? "PM" : "AM"
+        return `${hour12}:${minutes} ${ampm}`
+      } catch (error) {
+        console.error("Error formatting time:", error)
+        return time
+      }
+    }
+
+    // Helper function to format date
+    const formatDate = (dateString) => {
+      try {
+        const date = new Date(dateString + "T00:00:00")
+        return date.toLocaleDateString("en-US", {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          weekday: "short",
+        })
+      } catch (error) {
+        console.error("Error formatting date:", error)
+        return dateString
+      }
+    }
+
+    // ENHANCED: Create report header with better presentation
+    const reportTitle = "EMPLOYEE ATTENDANCE REPORT"
+    const reportDate = new Date().toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    })
+
+    // Get employee name for report
+    const employeeNameDisplay = userId 
+      ? (userId.includes(",") ? "Selected Employees" : (report.length > 0 ? report[0].user?.name : "Unknown Employee")) 
+      : "All Employees"
+
+    // ENHANCED: Report header section with better formatting
+    let csvContent = ""
+
+    // Title section
+    csvContent += `"${reportTitle}"\n`
+    csvContent += `"Generated on: ${reportDate}"\n`
+    csvContent += `"Report Period: ${formatDate(startDate)} to ${formatDate(endDate)}"\n`
+    csvContent += `"Employee(s): ${employeeNameDisplay}"\n`
+    csvContent += `"Generated by: ${req.user.name} (${req.user.employeeId})"\n`
+    csvContent += "\n"
+
+    // ENHANCED: Data table with better headers (removed Notes column)
+    const csvHeader =
+      [
+        "EMPLOYEE NAME",
+        "EMPLOYEE ID",
+        "DEPARTMENT",
+        "POSITION",
+        "DATE",
+        "DAY OF WEEK",
+        "CHECK IN TIME",
+        "CHECK OUT TIME",
+        "WORKING HOURS",
+        "STATUS",
+      ].join(",") + "\n"
+
+    csvContent += csvHeader
+
+    // Add separator line
+    csvContent += Array(10).fill('""').join(",") + "\n"
+
+    // Helper function to format duration in hours to hours and minutes
+    const formatDurationHours = (decimalHours) => {
+      if (!decimalHours || decimalHours <= 0) return "0h 0m"
+      const hours = Math.floor(decimalHours)
+      const minutes = Math.round((decimalHours - hours) * 60)
+      return `${hours}h ${minutes}m`
+    }
+
+    // Data rows
+    report.forEach((record) => {
+      try {
+        const status = record.checkIn && record.checkOut ? "Complete" : record.checkIn ? "Incomplete" : "Absent"
+        const workingHours = record.workingHours > 0 ? formatDurationHours(record.workingHours) : "0h 0m"
+        const formattedDate = formatDate(record.date)
+        const dayOfWeek = new Date(record.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "long" })
+
+        const row = [
+          `"${record.user?.name || ""}"`,
+          `"${record.user?.employeeId || ""}"`,
+          `"${record.user?.department || ""}"`,
+          `"${record.user?.position || ""}"`,
+          `"${formattedDate}"`,
+          `"${dayOfWeek}"`,
+          `"${formatTime(record.checkIn)}"`,
+          `"${formatTime(record.checkOut)}"`,
+          `"${workingHours}"`,
+          `"${status}"`,
+        ].join(",")
+
+        csvContent += row + "\n"
+      } catch (error) {
+        console.error("Error processing record:", error, record)
+      }
+    })
+
+    console.log("Enhanced CSV generated successfully, length:", csvContent.length)
+
+    // Set proper headers for CSV download
+    res.setHeader("Content-Type", "text/csv; charset=utf-8")
+    res.setHeader("Content-Disposition", `attachment; filename="Attendance_Report_${startDate}_to_${endDate}.csv"`)
+    res.setHeader("Content-Length", Buffer.byteLength(csvContent, "utf8"))
+
+    // Send the CSV data
+    res.status(200).send(csvContent)
+  } catch (error) {
+    console.error("Download report error:", error)
+    res.status(500).json({ error: "Failed to generate report: " + error.message })
+  }
+})
+
+router.get("/calendar/:month/:year", auth, async (req, res) => {
+  try {
+    const { month, year } = req.params
+    const targetMonth = Number(month)
+    const targetYear = Number(year)
+
+    if (targetMonth < 1 || targetMonth > 12 || targetYear < 2000 || targetYear > 2100) {
+      return res.status(400).json({ error: "Invalid month or year" })
+    }
+
+    const startDate = `${targetYear}-${String(targetMonth).padStart(2, "0")}-01`
+    const lastDay = new Date(targetYear, targetMonth, 0).getDate()
+    const endDate = `${targetYear}-${String(targetMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`
+
+    const query = {
+      user: req.user._id,
+      date: { $gte: startDate, $lte: endDate },
+    }
+
+    const attendanceRecords = await Attendance.find(query).lean()
+
+    // Create a map of dates to attendance data
+    const calendarData = {}
+    attendanceRecords.forEach((record) => {
+      calendarData[record.date] = {
+        date: record.date,
+        checkIn: record.checkIn,
+        checkOut: record.checkOut,
+        workingHours: record.workingHours,
+        status: record.status,
+        isPresent: !!record.checkIn,
+      }
+    })
+
+    res.json({
+      month: targetMonth,
+      year: targetYear,
+      calendarData,
+      totalDays: lastDay,
+    })
+  } catch (error) {
+    console.error("Calendar data error:", error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+module.exports = router
