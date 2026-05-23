@@ -638,7 +638,7 @@ router.post("/forgot-password", async (req, res) => {
         return explicit.replace(/\/+$/, "")
       }
       if (process.env.VERCEL || process.env.NODE_ENV === "production") {
-        const prod = "https://attendance-system-client-nine.vercel.app"
+        const prod = "https://employee-management-system-client-umber.vercel.app"
         console.log("[v0] Using production frontend URL:", prod)
         return prod
       }
