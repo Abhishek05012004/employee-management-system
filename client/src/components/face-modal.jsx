@@ -289,7 +289,7 @@ export default function FaceModal({ open, mode = "verify", enrollViaApi = true, 
             </button>
           </div>
 
-          {/* ── DEV BYPASS ── Remove or comment out this block before going to production ── */}
+          {/* DEV BYPASS removed: commented out for production
           <div className="mt-3 pt-3 border-t border-dashed border-amber-300">
             <button
               onClick={async () => {
@@ -313,7 +313,7 @@ export default function FaceModal({ open, mode = "verify", enrollViaApi = true, 
               🧪 Skip Face Verification — Dev Only
             </button>
           </div>
-          {/* ── END DEV BYPASS ── */}
+          */}
 
         </div>
       </div>
